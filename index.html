@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Collatz 3n+1 Conjecture Tree Fractal Draw</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  canvas { cursor: grab; }
+  canvas:active { cursor: grabbing; }
+  #tooltip { position:absolute; pointer-events:none; background:rgba(0,0,0,0.8); color:white; padding:4px 8px; border-radius:6px; font-size:12px; display:none; }
+</style>
+</head>
+<body class="bg-gray-950 min-h-screen flex flex-col items-center p-4">
+<h1 class="text-2xl font-bold text-white mb-1">🌿 Collatz 3n+1 Tree Fractal</h1>
+<p class="text-gray-400 text-sm mb-3">Branching tree of Collatz sequences for numbers 1–200. Hover to explore paths.</p>
+
+<div class="flex gap-4 items-center flex-wrap justify-center mb-3">
+  <div class="flex items-center gap-2">
+    <label class="text-gray-300 text-sm">Max N:</label>
+    <input type="range" id="maxN" min="20" max="200" value="100" class="w-28" aria-label="Maximum starting number">
+    <span id="maxNVal" class="text-yellow-300 text-sm w-8">100</span>
+  </div>
+  <div class="flex items-center gap-2">
+    <label class="text-gray-300 text-sm">Spread:</label>
+    <input type="range" id="spread" min="20" max="120" value="60" class="w-24" aria-label="Tree spread angle">
+    <span id="spreadVal" class="text-yellow-300 text-sm w-8">60</span>
+  </div>
+  <button onclick="redraw()" class="bg-blue-600 text-white px-4 py-1.5 rounded-lg font-bold hover:bg-blue-700 text-sm">Redraw</button>
+  <button onclick="resetView()" class="bg-gray-600 text-white px-4 py-1.5 rounded-lg font-bold hover:bg-gray-700 text-sm">Reset View</button>
+</div>
+
+<div class="relative">
+  <canvas id="canvas" width="900" height="620" class="rounded-xl border border-gray-700 block"></canvas>
+  <div id="tooltip"></div>
+</div>
+
+<div class="mt-2 text-gray-500 text-xs">Scroll to zoom • Drag to pan • Hover for path details</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const tooltip = document.getElementById('tooltip');
+
+let maxN = 100;
+let panX = 0, panY = 0, zoom = 1;
+let isDragging = false, lastMouse = null;
+let treeData = {}; // node -> {x, y, parent, n, steps}
+let edges = []; // [{x1,y1,x2,y2,color,n}]
+
+function collatz(n) {
+  const seq = [n];
+  while (n !== 1) {
+    n = n % 2 === 0 ? n / 2 : 3 * n + 1;
+    seq.push(n);
+  }
+  return seq;
+}
+
+function hslColor(n, maxN) {
+  const hue = (n / maxN) * 300;
+  return `hsl(${hue},90%,65%)`;
+}
+
+function buildTree() {
+  treeData = {};
+  edges = [];
+  // Each number's Collatz sequence ends at 1
+  // We build a tree rooted at 1 by reversing: node's parent is next value in sequence
+  // Position nodes using BFS from root
+
+  const nodeSet = new Set();
+  nodeSet.add(1);
+  const sequences = {};
+  for (let n = 2; n <= maxN; n++) {
+    const seq = collatz(n);
+    sequences[n] = seq;
+    seq.forEach(v => nodeSet.add(v));
+  }
+
+  // Build adjacency: parent[child] = parent
+  const parent = {};
+  for (let n = 2; n <= maxN; n++) {
+    const seq = sequences[n];
+    for (let i = 0; i < seq.length - 1; i++) {
+      if (!parent[seq[i]]) parent[seq[i]] = seq[i+1];
+    }
+  }
+
+  const children = {};
+  for (const [child, par] of Object.entries(parent)) {
+    if (!children[par]) children[par] = [];
+    if (!children[par].includes(parseInt(child))) children[par].push(parseInt(child));
+  }
+
+  // Layout: root at bottom center, branches up
+  const W = canvas.width;
+  const H = canvas.height;
+  const nodePos = {};
+
+  // BFS layout
+  const spreadAngle = parseInt(document.getElementById('spread').value) * Math.PI / 180;
+
+  function layoutNode(node, x, y, angle, depth, arcWidth) {
+    nodePos[node] = {x, y};
+    const kids = (children[node] || []).filter(c => c <= maxN*3);
+    if (kids.length === 0) return;
+    const step = kids.length === 1 ? 0 : arcWidth / (kids.length - 1);
+    const startAngle = kids.length === 1 ? angle : angle - arcWidth/2;
+    const dist = Math.max(15, 80 - depth * 4);
+    kids.forEach((kid, i) => {
+      const a = startAngle + i * step;
+      const nx = x + Math.cos(a) * dist;
+      const ny = y + Math.sin(a) * dist;
+      layoutNode(kid, nx, ny, a, depth+1, arcWidth * 0.8);
+    });
+  }
+
+  layoutNode(1, W/2, H-30, -Math.PI/2, 0, spreadAngle);
+
+  // Draw edges
+  for (const [child, par] of Object.entries(parent)) {
+    const childN = parseInt(child);
+    if (childN > maxN) continue;
+    if (!nodePos[childN] || !nodePos[par]) continue;
+    edges.push({
+      x1: nodePos[par].x, y1: nodePos[par].y,
+      x2: nodePos[childN].x, y2: nodePos[childN].y,
+      color: hslColor(childN, maxN), n: childN,
+      steps: sequences[childN] ? sequences[childN].length : 0
+    });
+  }
+
+  treeData = nodePos;
+  return edges;
+}
+
+function draw(hoveredN = null) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.save();
+  ctx.translate(panX, panY);
+  ctx.scale(zoom, zoom);
+
+  for (const e of edges) {
+    ctx.beginPath();
+    ctx.moveTo(e.x1, e.y1);
+    ctx.lineTo(e.x2, e.y2);
+    if (hoveredN !== null && e.n === hoveredN) {
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 3 / zoom;
+    } else {
+      ctx.strokeStyle = e.color;
+      ctx.lineWidth = 1 / zoom;
+      ctx.globalAlpha = hoveredN !== null ? 0.2 : 0.8;
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  // Draw root node
+  if (treeData[1]) {
+    ctx.beginPath();
+    ctx.arc(treeData[1].x, treeData[1].y, 5/zoom, 0, Math.PI*2);
+    ctx.fillStyle = '#fbbf24';
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function redraw() {
+  maxN = parseInt(document.getElementById('maxN').value);
+  buildTree();
+  draw();
+}
+
+function resetView() { panX=0; panY=0; zoom=1; draw(); }
+
+document.getElementById('maxN').addEventListener('input', e => {
+  document.getElementById('maxNVal').textContent = e.target.value;
+});
+document.getElementById('spread').addEventListener('input', e => {
+  document.getElementById('spreadVal').textContent = e.target.value;
+});
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.1 : 0.9;
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left - panX) / zoom;
+  const my = (e.clientY - rect.top - panY) / zoom;
+  zoom *= factor;
+  panX = e.clientX - rect.left - mx * zoom;
+  panY = e.clientY - rect.top - my * zoom;
+  draw();
+}, {passive: false});
+
+canvas.addEventListener('mousedown', e => { isDragging=true; lastMouse={x:e.clientX,y:e.clientY}; });
+canvas.addEventListener('mouseup', () => isDragging=false);
+canvas.addEventListener('mouseleave', () => { isDragging=false; tooltip.style.display='none'; });
+canvas.addEventListener('mousemove', e => {
+  if (isDragging && lastMouse) {
+    panX += e.clientX - lastMouse.x;
+    panY += e.clientY - lastMouse.y;
+    lastMouse = {x:e.clientX, y:e.clientY};
+    draw(); return;
+  }
+  // Hover detection
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left - panX) / zoom;
+  const my = (e.clientY - rect.top - panY) / zoom;
+  let nearest = null, minDist = 12;
+  for (const e2 of edges) {
+    const d = Math.hypot(mx-e2.x2, my-e2.y2);
+    if (d < minDist) { minDist=d; nearest=e2; }
+  }
+  if (nearest) {
+    tooltip.style.display='block';
+    tooltip.style.left = (e.clientX - rect.left + 10) + 'px';
+    tooltip.style.top = (e.clientY - rect.top - 10) + 'px';
+    tooltip.textContent = `n=${nearest.n} | ${nearest.steps} steps to reach 1`;
+    draw(nearest.n);
+  } else {
+    tooltip.style.display='none';
+    draw();
+  }
+});
+
+buildTree(); draw();
+</script>
+</body>
+</html>
